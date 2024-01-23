@@ -3,9 +3,32 @@ use std::str::Bytes;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Atom<'a> {
     Number(f64),
-    Operator(&'a str),
     Identifier(&'a str),
     Nil,
+}
+
+impl<'a> From<f64> for Atom<'a> {
+    fn from(value: f64) -> Self {
+        Atom::Number(value)
+    }
+}
+
+impl<'a> From<f64> for Expression<'a> {
+    fn from(value: f64) -> Self {
+        Expression::Atom(Atom::Number(value))
+    }
+}
+
+impl<'a> From<&'a str> for Atom<'a> {
+    fn from(value: &'a str) -> Self {
+        Atom::Identifier(value)
+    }
+}
+
+impl<'a> From<&'a str> for Expression<'a> {
+    fn from(value: &'a str) -> Self {
+        Expression::Atom(Atom::Identifier(value))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -28,29 +51,46 @@ pub enum Expression<'a> {
 }
 
 fn parse_identifier<'a>(input: &'a str) -> Option<(&'a str, &'a str)> {
-    let mut b_iter = input.bytes().enumerate();
-    if b_iter.next()?.1.is_ascii_alphabetic() {
-        let index = b_iter
-            .skip_while(|(_, c)| !c.is_ascii_whitespace())
-            .next()?
-            .0;
-        Some(input.split_at(index))
+    let (id, input) = split_to_first_whitespace(input)?;
+    if id.bytes().next()?.is_ascii_alphabetic() {
+        Some((id, input))
     } else {
         None
     }
 }
 
+fn split_to_first_whitespace<'a>(input: &'a str) -> Option<(&'a str, &'a str)> {
+    let mut split_index = input
+        .bytes()
+        .take_while(|b| !b.is_ascii_whitespace() && b != &(')' as u8))
+        .count();
+    if split_index == 0 {
+        None
+    } else {
+        Some(input.split_at(split_index))
+    }
+}
+
 fn parse_expression<'a>(input: &'a str) -> Option<(Expression<'a>, &'a str)> {
-    None
+    parse_bracketed(input).or_else(|| parse_atom(input).map(|(e, i)| (Expression::Atom(e), i)))
 }
 
 fn parse_atom<'a>(input: &'a str) -> Option<(Atom<'a>, &'a str)> {
-    todo!()
+    let (value, input) = split_to_first_whitespace(input)?;
+    let b = value.bytes().next()?;
+    if b.is_ascii_digit() {
+        Some((value.parse().ok().map(Atom::Number)?, input))
+    } else {
+        Some((Atom::Identifier(value), input))
+    }
 }
 
 fn parse_define<'a>(input: &'a str) -> Option<(Expression<'a>, &'a str)> {
-    let input = input.strip_prefix("define")?.trim_start();
-    let ((ident, value), input) = parse_binding_pair(input)?;
+    let (start, input) = split_to_first_whitespace(input)?;
+    if start != "define" {
+        return None;
+    }
+    let ((ident, value), input) = parse_binding_pair(input.trim_start())?;
     Some((
         Expression::Define {
             identifier: ident,
@@ -67,7 +107,10 @@ fn parse_binding_pair<'a>(input: &'a str) -> Option<((&'a str, Expression<'a>), 
 }
 
 fn parse_let<'a>(input: &'a str) -> Option<(Expression<'a>, &'a str)> {
-    let input = input.strip_prefix("define")?.trim_start();
+    let (start, input) = split_to_first_whitespace(input)?;
+    if start != "let" {
+        return None;
+    }
     let bindings_fun = |mut i: &'a str| {
         let mut bindings = vec![];
         loop {
@@ -79,13 +122,9 @@ fn parse_let<'a>(input: &'a str) -> Option<(Expression<'a>, &'a str)> {
                 None => break,
             }
         }
-        if bindings.is_empty() {
-            None
-        } else {
-            Some((bindings, i))
-        }
+        Some((bindings, i))
     };
-    let (bindings, input) = bracketed(bindings_fun, input)?;
+    let (bindings, input) = bracketed(bindings_fun, input.trim_start())?;
     let (body, input) = parse_expression(input.trim_start())?;
     Some((
         Expression::Let {
@@ -96,7 +135,10 @@ fn parse_let<'a>(input: &'a str) -> Option<(Expression<'a>, &'a str)> {
     ))
 }
 fn parse_lambda<'a>(input: &'a str) -> Option<(Expression<'a>, &'a str)> {
-    let input = input.strip_prefix("lambda")?.trim_start();
+    let (start, input) = split_to_first_whitespace(input)?;
+    if start != "lambda" {
+        return None;
+    }
     let args_fun = |mut i: &'a str| {
         let mut args = vec![];
         loop {
@@ -110,7 +152,7 @@ fn parse_lambda<'a>(input: &'a str) -> Option<(Expression<'a>, &'a str)> {
         }
         Some((args, i))
     };
-    let (args, input) = bracketed(args_fun, input)?;
+    let (args, input) = bracketed(args_fun, input.trim_start())?;
     let (body, input) = parse_expression(input.trim_start())?;
     Some((
         Expression::Lambda {
@@ -121,10 +163,30 @@ fn parse_lambda<'a>(input: &'a str) -> Option<(Expression<'a>, &'a str)> {
     ))
 }
 fn parse_begin<'a>(input: &'a str) -> Option<(Expression<'a>, &'a str)> {
-    todo!()
+    let (start, input) = split_to_first_whitespace(input)?;
+    if start != "begin" {
+        return None;
+    }
+    let (exprs, input) = parse_list(input.trim_start())?;
+    if exprs.is_empty() {
+        None
+    } else {
+        Some((Expression::Begin(exprs), input))
+    }
 }
-fn parse_list<'a>(input: &'a str) -> Option<(Expression<'a>, &'a str)> {
-    todo!()
+
+fn parse_list<'a>(mut i: &'a str) -> Option<(Vec<Expression<'a>>, &'a str)> {
+    let mut exprs = vec![];
+    loop {
+        match parse_expression(i.trim_start()) {
+            Some((expr, new_i)) => {
+                exprs.push(expr);
+                i = new_i;
+            }
+            None => break,
+        }
+    }
+    Some((exprs, i))
 }
 
 fn bracketed<'a, A, F>(f: F, input: &'a str) -> Option<(A, &'a str)>
@@ -144,7 +206,7 @@ fn parse_bracketed<'a>(input: &'a str) -> Option<(Expression<'a>, &'a str)> {
                 .or_else(|| parse_let(input))
                 .or_else(|| parse_lambda(input))
                 .or_else(|| parse_begin(input))
-                .or_else(|| parse_list(input))
+                .or_else(|| parse_list(input).map(|(es, i)| (Expression::List(es), i)))
         },
         input,
     )
@@ -153,8 +215,110 @@ fn parse_bracketed<'a>(input: &'a str) -> Option<(Expression<'a>, &'a str)> {
 #[cfg(test)]
 mod test {
     use super::*;
+
     #[test]
-    fn test_parse_bracketed() {
-        assert_eq!(parse_bracketed("(define x 3)"), None);
+    fn test_parse_atom() {
+        assert_eq!(parse_atom("3 3240 "), Some((Atom::Number(3.0), " 3240 ")));
+        assert_eq!(
+            parse_atom("+ 3240 "),
+            Some((Atom::Identifier("+"), " 3240 "))
+        );
+        assert_eq!(parse_atom("32aa"), None);
+    }
+
+    #[test]
+    fn test_bracketed() {
+        assert_eq!(bracketed(|i| Some(("hi", i)), "()  "), Some(("hi", "  ")));
+        assert_eq!(
+            bracketed(parse_atom, "(3.0)  "),
+            Some((Atom::Number(3f64), "  "))
+        );
+        assert_eq!(
+            bracketed(parse_atom, "(ooh3)  "),
+            Some((Atom::Identifier("ooh3"), "  "))
+        );
+    }
+
+    #[test]
+    fn test_begin() {
+        assert_eq!(
+            parse_begin("begin 3 4 )"),
+            Some((Expression::Begin(vec![3.0.into(), 4.0.into()]), " )"))
+        );
+        assert_eq!(parse_begin("begin )"), None);
+    }
+
+    #[test]
+    fn test_let() {
+        assert_eq!(
+            parse_let("let ((x 3) (y 4)) 10) =="),
+            Some((
+                Expression::Let {
+                    pairs: vec![("x", 3.0.into()), ("y", 4.0.into())],
+                    body: Box::new(10.0.into())
+                },
+                ") =="
+            ))
+        );
+    }
+
+    #[test]
+    fn test_parse_list() {
+        assert_eq!(
+            parse_list(
+                "(define x 3) (let ((y 3)) 4)(let () 4) (begin 3 2) 1 (lambda (x y) (* x y))"
+            ),
+            Some((
+                vec![
+                    Expression::Define {
+                        identifier: "x",
+                        value: Box::new(3.0.into())
+                    },
+                    Expression::Let {
+                        pairs: vec![("y", 3.0.into())],
+                        body: Box::new(4.0.into())
+                    },
+                    Expression::Let {
+                        pairs: vec![],
+                        body: Box::new(4.0.into())
+                    },
+                    Expression::Begin(vec![3.0.into(), 2.0.into()]),
+                    1.0.into(),
+                    Expression::Lambda {
+                        arguments: vec!["x", "y"],
+                        body: Box::new(Expression::List(vec!["*".into(), "x".into(), "y".into()]))
+                    }
+                ],
+                ""
+            ))
+        );
+        assert_eq!(
+            parse_list(
+                "(define x 3) (let ((y 3)) 4)(let () 4) (begin 3 2) 1 (lambda (x y) (* x y))"
+            ),
+            Some((
+                vec![
+                    Expression::Define {
+                        identifier: "x",
+                        value: Box::new(3.0.into())
+                    },
+                    Expression::Let {
+                        pairs: vec![("y", 3.0.into())],
+                        body: Box::new(4.0.into())
+                    },
+                    Expression::Let {
+                        pairs: vec![],
+                        body: Box::new(4.0.into())
+                    },
+                    Expression::Begin(vec![3.0.into(), 2.0.into()]),
+                    1.0.into(),
+                    Expression::Lambda {
+                        arguments: vec!["x", "y"],
+                        body: Box::new(Expression::List(vec!["*".into(), "x".into(), "y".into()]))
+                    }
+                ],
+                ""
+            ))
+        );
     }
 }
