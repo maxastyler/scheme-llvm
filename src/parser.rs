@@ -175,7 +175,7 @@ fn parse_begin<'a>(input: &'a str) -> Option<(Expression<'a>, &'a str)> {
     }
 }
 
-fn parse_list<'a>(mut i: &'a str) -> Option<(Vec<Expression<'a>>, &'a str)> {
+pub fn parse_list<'a>(mut i: &'a str) -> Option<(Vec<Expression<'a>>, &'a str)> {
     let mut exprs = vec![];
     loop {
         match parse_expression(i.trim_start()) {
